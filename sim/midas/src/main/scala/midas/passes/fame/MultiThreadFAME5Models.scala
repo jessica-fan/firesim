@@ -14,6 +14,8 @@ import firrtl.transforms.DontTouchAnnotation
 
 import midas.targetutils.{FirrtlEnableModelMultiThreadingAnnotation, FirrtlExcludeFromMultiThreadingAnnotation}
 
+import org.chipsalliance.cde.config.Parameters
+
 import collection.mutable
 
 import midas.passes._
@@ -129,13 +131,13 @@ object MultiThreadFAME5Models extends Transform {
   override def execute(state: CircuitState): CircuitState = {
     val p = state.annotations.collectFirst({ case midas.stage.phases.ConfigParametersAnnotation(p) => p }).get
     if (p(midas.EnableModelMultiThreading)) {
-      doTransform(state)
+      doTransform(state, p)
     } else {
       state
     }
   }
 
-  private def doTransform(state: CircuitState): CircuitState = {
+  private def doTransform(state: CircuitState, p: Parameters): CircuitState = {
     val moduleDefs = state.circuit.modules.collect({ case m: Module => OfModule(m.name) -> m }).toMap
 
     val top         = moduleDefs(OfModule(state.circuit.main))
