@@ -69,6 +69,10 @@ case object GenerateMultiCycleRamModels extends Field[Boolean](false)
 // Enables multithreading of repeated instances of annotated models
 case object EnableModelMultiThreading extends Field[Boolean](false)
 
+// Number of threads per multithreaded group (0 = all instances in one group)
+// For example, with 8 cores and ThreadsPerGroup=4, you get 2 groups with 4 threads each
+case object ThreadsPerGroup extends Field[Int](0)
+
 // User provided transforms to run before Golden Gate transformations
 // These are constructor functions accept a Parameters instance and produce a
 // sequence of firrtl Transforms to run

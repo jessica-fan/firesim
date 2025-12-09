@@ -186,7 +186,23 @@ object MultiThreadFAME5Models extends Transform {
     // For now, just one FAME5 model
     assert(fame5InstancesByModule.keySet.size <= 1)
 
-    val nThreads            = fame5InstancesByModule.headOption.map(_._2.size).getOrElse(1)
+    // Get the threads per group configuration (0 means all instances in one group)
+    val threadsPerGroup = p(midas.ThreadsPerGroup)
+    val totalInstances = fame5InstancesByModule.headOption.map(_._2.size).getOrElse(1)
+    
+    // Calculate the number of threads per group and number of groups
+    val (nThreads, nGroups) = if (threadsPerGroup > 0 && totalInstances > threadsPerGroup) {
+      require(totalInstances % threadsPerGroup == 0, 
+        s"Total instances ($totalInstances) must be divisible by ThreadsPerGroup ($threadsPerGroup)")
+      (threadsPerGroup, totalInstances / threadsPerGroup)
+    } else {
+      (totalInstances, 1)
+    }
+    
+    // Split instances into groups
+    val fame5InstanceGroups: Map[OfModule, Seq[mutable.LinkedHashSet[Instance]]] = fame5InstancesByModule.map { case (m, insts) =>
+      m -> insts.toSeq.grouped(nThreads).map(g => mutable.LinkedHashSet(g: _*)).toSeq
+    }.toMap
     val circuitNS           = Namespace(state.circuit)
     val excludedModuleNames = excludedModules.map(_.value).toSet
     
@@ -200,17 +216,26 @@ object MultiThreadFAME5Models extends Transform {
       })
       .toMap
 
-    val threadedInstances = fame5InstancesByModule
-      .map({ case (m, _) =>
-        m -> WDefInstance(FAME5Info.info, ns.newName(s"${m.value}_threaded"), threadedModuleNames(m.value), UnknownType)
+    // Create one threaded instance per group
+    val threadedInstances: Map[OfModule, Seq[WDefInstance]] = fame5InstanceGroups
+      .map({ case (m, groups) =>
+        m -> groups.zipWithIndex.map { case (_, groupIdx) =>
+          val instName = if (nGroups > 1) {
+            ns.newName(s"${m.value}_threaded_g${groupIdx}")
+          } else {
+            ns.newName(s"${m.value}_threaded")
+          }
+          WDefInstance(FAME5Info.info, instName, threadedModuleNames(m.value), UnknownType)
+        }
       })
       .toMap
 
-    val threadCounters = fame5InstancesByModule.map { case (m, insts) =>
-      m -> Counter(insts.size, hostClock, hostReset)
+    // Create one counter per group
+    val threadCounters: Map[OfModule, Seq[SignalInfo]] = fame5InstanceGroups.map { case (m, groups) =>
+      m -> groups.map(_ => Counter(nThreads, hostClock, hostReset))
     }
 
-    println(s"FAME5 multithreading ${nThreads} nThreads")
+    println(s"FAME5 multithreading ${nThreads} threads per group, ${nGroups} groups (${totalInstances} total instances)")
     // - Add (de)muxes in front of the multi-threaded model
     //    ---------                 -----------
     //  ->| Mod 0 |                 |         |
@@ -227,24 +252,34 @@ object MultiThreadFAME5Models extends Transform {
     //    ---------      <-|-----|  |         |
     //  <-| Mod 2 |                 |         |
     //    ---------                 -----------
+    // With multiple groups, each group has its own MTModel instance and arbiter
     val multiThreadedConns: Seq[Statement] = fame5Topo.toSeq.flatMap { case (mod, connsByPort) =>
-      val arbiter = new StaticArbiter(threadCounters(mod))
+      val groups = fame5InstanceGroups(mod)
+      val countersForMod = threadCounters(mod)
+      val instsForMod = threadedInstances(mod)
+      
+      groups.zipWithIndex.flatMap { case (groupInsts, groupIdx) =>
+        val arbiter = new StaticArbiter(countersForMod(groupIdx))
+        val threadedInst = instsForMod(groupIdx)
+        
       connsByPort.toSeq.map { case (port, connsByInstance) =>
-        val canonicalOrderedConns = fame5InstancesByModule(mod).map(inst => connsByInstance(inst)).toSeq
+          // Get connections for instances in this group only
+          val canonicalOrderedConns = groupInsts.map(inst => connsByInstance(inst)).toSeq
         if (moduleDefs(mod).ports.exists(p => p.name == port && p.direction == Input)) {
-          val sink    = ReadyValidSink(WSubField(WRef(threadedInstances(mod)), port))
+            val sink    = ReadyValidSink(WSubField(WRef(threadedInst), port))
           val sources = canonicalOrderedConns.map(s => ReadyValidSource(s))
           arbiter.mux(sink, sources)
         } else {
           val sinks  = canonicalOrderedConns.map(s => ReadyValidSink(s))
-          val source = ReadyValidSource(WSubField(WRef(threadedInstances(mod)), port))
+            val source = ReadyValidSource(WSubField(WRef(threadedInst), port))
           arbiter.demux(sinks, source)
+          }
         }
       }
     }
 
-    val insts      = threadedInstances.toSeq.map { case (_, v) => v } // keep ordering
-    val counters   = threadCounters.toSeq.map { case (_, v) => v }    // keep ordering
+    val insts      = threadedInstances.toSeq.flatMap { case (_, v) => v } // keep ordering, flatten groups
+    val counters   = threadCounters.toSeq.flatMap { case (_, v) => v }    // keep ordering, flatten groups
     val clockConns =
       insts.map(i => Connect(FAME5Info.info, WSubField(WRef(i), WrapTop.hostClockName), WRef(WrapTop.hostClockName)))
     val resetConns =

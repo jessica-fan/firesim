@@ -28,10 +28,21 @@ class WithModelMultiThreading
       true
     })
 
+class WithThreadsPerGroup(n: Int)
+    extends Config((_, _, _) => { case midas.ThreadsPerGroup =>
+      n
+    })
+
 // Short name aliases for above
 class MCRams extends WithMultiCycleRamModels
 
 class MTModels extends WithModelMultiThreading
+
+// Threads per group aliases (e.g., TPG4 = 4 threads per group)
+class TPG2  extends WithThreadsPerGroup(2)
+class TPG4  extends WithThreadsPerGroup(4)
+class TPG8  extends WithThreadsPerGroup(8)
+class TPG16 extends WithThreadsPerGroup(16)
 
 class WithILADepth(depth: Int)
     extends Config((_, _, _) => { case midas.ILADepthKey =>
